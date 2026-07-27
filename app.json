@@ -1,0 +1,42 @@
+{
+    "name": "colusion-action",
+    "env": {
+        "GRAFO_BACKEND": {
+            "description": "Backend del grafo (el botón automatiza spanner; alloydb requiere ./instalar/desplegar.sh)",
+            "value": "spanner",
+            "required": true,
+            "order": 1
+        },
+        "SPANNER_INSTANCE": {
+            "description": "Instancia Spanner (se crea si no existe, Enterprise, 100 PU)",
+            "value": "colusion-graph",
+            "required": true,
+            "order": 2
+        },
+        "SPANNER_DATABASE": {
+            "description": "Base del grafo (se crea con el DDL de GrafoColusion)",
+            "value": "colusion",
+            "required": true,
+            "order": 3
+        },
+        "ACTION_HUB_TOKEN": {
+            "description": "Token del Action Hub (generado automáticamente)",
+            "generator": "secret",
+            "order": 4
+        }
+    },
+    "options": {
+        "allow-unauthenticated": true,
+        "memory": "512Mi",
+        "cpu": "1",
+        "max-instances": 5
+    },
+    "hooks": {
+        "precreate": {
+            "commands": ["bash instalar/hooks/precreate.sh"]
+        },
+        "postcreate": {
+            "commands": ["bash instalar/hooks/postcreate.sh"]
+        }
+    }
+}

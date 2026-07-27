@@ -228,7 +228,7 @@ async def ejecutar(request: Request,
                             detail=f"error temporal escribiendo {corrida_id}; "
                                    f"Looker reintentará")
 
-    _bitacora("INFO", "corrida_escrita", corrida=corrida_id,
+    _bitacora("INFO", "corrida_procesada", corrida=corrida_id,
               nodos=len(conclusion.nodos), aristas=len(conclusion.aristas),
               filas=len(filas), truncadas=truncadas,
               modo=form.get("modo", "auto"))

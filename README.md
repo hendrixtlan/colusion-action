@@ -1,5 +1,36 @@
 # colusion-action: un agente en Looker + una action + un grafo
 
+## Despliegue en un clic
+
+Sube este directorio a un repo **público** de GitHub y reemplaza
+`TU_USUARIO/colusion-action` en estos badges:
+
+```markdown
+[![Run on Google Cloud](https://deploy.cloud.run/button.svg)](https://deploy.cloud.run/?git_repo=https://github.com/TU_USUARIO/colusion-action.git)
+[![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/TU_USUARIO/colusion-action.git&cloudshell_tutorial=tutorial.md)
+```
+
+**Botón "Run on Google Cloud"** (el clic de verdad): abre Cloud Shell,
+pregunta proyecto/región, genera el token automáticamente
+(`generator: secret` en `app.json`) y sus hooks corren las mismas fases de
+`instalar/fases.sh`: `precreate` habilita APIs, crea la service account y la
+instancia Spanner Enterprise con el grafo; el botón construye y crea el
+servicio; `postcreate` le pone la service account mínima, espeja el token en
+Secret Manager, fija `URL_BASE`, espera `/listo` y te imprime el bloque
+exacto para pegar en Looker. Backend del clic: Spanner (AlloyDB sigue por
+`desplegar.sh` porque exige decisiones de red).
+
+**Botón "Open in Cloud Shell"**: repo clonado + `tutorial.md` guiado en 4
+pasos (deploy → aceptación → registro en Looker → chat). Úsalo para repos
+privados o cuando quieras ver cada fase.
+
+**CLI**: `./instalar/desplegar.sh` (misma lógica; sirve para CI y AlloyDB).
+
+Los tres caminos convergen: mismo servicio, mismas garantías, misma
+aceptación (`probar.sh`). El único paso que ningún botón puede dar es pegar
+URL+token en Admin de Looker (es *su* instancia); queda impreso al final.
+
+
 Version minima del patron de [fleet-agent](https://github.com/hendrixtlan/fleet-agent):
 en lugar de flotas de agentes ADK en Cloud Run Jobs, **un solo data agent de
 Conversational Analytics dentro de Looker** hace el analisis, y una **action
@@ -234,6 +265,69 @@ Probar local con `adk web`.
 
 Este chat puede embeberse de vuelta en Looker (extension framework / iframe)
 para que los analistas no salgan de Looker.
+
+## Ver el grafo dentro de Looker (carpeta `lookml/`)
+
+El grafo regresa a Looker como Explores — el ciclo completo vive en un solo
+lugar: el agente encuentra, la action escribe, Looker enseña lo escrito.
+
+1. **Conexion**: Admin → Connections → dialecto **Google Spanner**
+   (project / instance / database de `colusion-graph`), con una service
+   account que tenga `roles/spanner.databaseUser`.
+2. **Proyecto LookML**: importa `lookml/` (modelo `colusion`). El truco
+   central: derived tables con **GQL adentro de SQL via `GRAPH_TABLE`** —
+   el patron de grafo corre en Spanner, Looker agrupa y grafica encima.
+   Explores: pares por licitaciones compartidas, anillo parametrizado por
+   proveedor (camino cuantificado 1..3 saltos), conclusiones (aristas),
+   cola de revision y proveniencia por corrida.
+3. **Visualizacion**: instala del Marketplace (Marketplace →
+   Visualizations) **Chord** — dos dimensiones + una medida: exactamente
+   `(a, b, licitaciones_compartidas)` — y **Sankey** / **Collapsible
+   Tree** para flujos proveedor→licitacion y el anillo. El dashboard
+   `grafo_colusion` trae los tiles listos; cambia el tipo de viz en la UI
+   tras instalar.
+4. **Cierres de ciclo**: la vista `pares_por_licitacion.a` trae la action
+   de celda ("Marcar colusion en el grafo" → `/accion/celda`); agrega estos
+   Explores al data agent para que el agente lea sus propias conclusiones;
+   y monta un agentic workflow sobre `revision_pendiente.pendientes` para
+   avisar por Slack cuando haya conclusiones esperando firma humana.
+5. **El as de la demo**: Spanner Studio visualiza el grafo nativo (nodos y
+   aristas) cuando la consulta devuelve nodos con `SAFE_TO_JSON` — usalo
+   para el momento "network graph" mientras Looker muestra chord y tablas.
+   Fase 2 si piden el network dentro de Looker: custom viz (D3 force) o
+   extension framework.
+
+## ¿Y si a media demo piden AlloyDB?
+
+Primero la fisica: un cluster de AlloyDB gestionado tarda ~10–15 minutos en
+aprovisionarse y exige decisiones de red (Private Services Access). Eso no
+se improvisa frente al cliente — se coreografia. Tres jugadas:
+
+**Jugada A (la preparada, ~60 segundos en vivo).** Si sabes que el costo de
+Spanner les preocupa, aprovisiona AlloyDB *antes* de la demo
+(`BACKEND=alloydb ./instalar/desplegar.sh` en fase previa, o solo el cluster
++ `psql -f sql/alloydb.sql`). En la demo:
+
+```bash
+./instalar/cambiar_backend.sh alloydb "host=IP_privada dbname=colusion user=postgres password=... sslmode=require"
+BACKEND=alloydb ./instalar/probar.sh    # la misma aceptación, en verde, contra Postgres
+```
+
+Nueva revision de Cloud Run, `/listo` verificado contra la base nueva, y la
+aceptacion completa frente a ellos. Di con orgullo que el grafo arranca
+limpio: cada backend es su propia base; el repositorio es un puerto, no una
+migracion (y migrar seria un SELECT/INSERT espejo si algun dia hiciera falta).
+
+**Jugada B (sin nada preparado, ~2 minutos).** En Cloud Shell:
+`./instalar/demo_alloydb_local.sh` — Postgres 16 real en contenedor, la
+MISMA action local, y la aceptacion (escritura, idempotencia, COUNT==1)
+mientras explicas que el gestionado se agenda para el dia siguiente.
+
+**Jugada C (la narrativa).** "Esta pregunta es exactamente la razon del
+diseño": el adaptador AlloyDB esta validado contra Postgres real —
+escritura, reintentos idempotentes, ruta de revision y las consultas de
+anillos con `WITH RECURSIVE` — y el esquema es espejo del de Spanner.
+Cambiar de opinion cuesta una variable de entorno, no un proyecto.
 
 ## A prueba de balas: garantias y politica de fallas
 

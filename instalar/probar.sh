@@ -62,6 +62,11 @@ if [ "$BACKEND" = "spanner" ]; then
       --sql="SELECT COUNT(*) FROM ColudidoCon WHERE corrida_id='${C1}'" | tr -d "[]'")
   [ "$N" = "1" ] && ok "exactamente 1 arista para $C1 (sin duplicados)" \
     || fallo "esperaba 1 arista para $C1, hay: $N"
+elif [ -n "${ALLOYDB_DSN:-}" ] && command -v psql >/dev/null; then
+  echo "── 6) El grafo dice la verdad (AlloyDB) ──"
+  N=$(psql "$ALLOYDB_DSN" -tAc "SELECT COUNT(*) FROM coludido_con WHERE corrida_id='${C1}'")
+  [ "$N" = "1" ] && ok "exactamente 1 arista para $C1 (sin duplicados)" \
+    || fallo "esperaba 1 arista para $C1, hay: $N"
 else
   echo "── 6) Verifica en AlloyDB: SELECT COUNT(*) FROM coludido_con WHERE corrida_id='${C1}'; (debe ser 1) ──"
 fi
