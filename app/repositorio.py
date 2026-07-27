@@ -28,6 +28,8 @@ class GrafoRepositorio(Protocol):
     def encolar_revision(self, corrida_id: str,
                          conclusion: ConclusionColusion) -> None: ...
 
+    def verificar(self) -> None: ...
+
 
 def construir_repositorio() -> GrafoRepositorio:
     backend = os.environ.get("GRAFO_BACKEND", "spanner").lower()
@@ -61,6 +63,39 @@ def _score_arista(props: dict, defecto: float) -> float:
     return float(valor) if isinstance(valor, (int, float)) else defecto
 
 
+# ── Resiliencia comun ──
+
+_TRANSITORIOS = {"Aborted", "ServiceUnavailable", "DeadlineExceeded",
+                 "InternalServerError", "OperationalError", "InterfaceError",
+                 "ConnectionDoesNotExist", "TooManyConnections"}
+LOTE = int(os.environ.get("LOTE_ESCRITURA", "500"))
+
+
+def _con_reintentos(fn, intentos: int = 3):
+    """Ejecuta fn() reintentando errores transitorios con backoff exponencial.
+
+    Seguro porque toda escritura es idempotente (insert_or_update /
+    ON CONFLICT con corrida_id determinista): reintentar converge.
+    """
+    import time
+    ultimo = None
+    for n in range(intentos):
+        try:
+            return fn()
+        except Exception as exc:  # clasificacion por nombre: sin acoplar imports
+            ultimo = exc
+            if type(exc).__name__ not in _TRANSITORIOS or n == intentos - 1:
+                raise
+            time.sleep(0.5 * (2 ** n))
+    raise ultimo
+
+
+def _lotes(filas: list, tam: int = None):
+    tam = tam or LOTE
+    for i in range(0, len(filas), tam):
+        yield filas[i:i + tam]
+
+
 # ── Adaptador Spanner Graph ──
 
 class SpannerGrafo:
@@ -78,7 +113,18 @@ class SpannerGrafo:
         self._db = (cliente.instance(os.environ["SPANNER_INSTANCE"])
                     .database(os.environ["SPANNER_DATABASE"]))
 
+    def verificar(self) -> None:
+        with self._db.snapshot() as s:
+            list(s.execute_sql("SELECT 1"))
+
     def persistir(self, corrida_id, conclusion, consulta_looker=None, usuario=""):
+        _con_reintentos(lambda: self._persistir(
+            corrida_id, conclusion, consulta_looker, usuario))
+
+    def _persistir(self, corrida_id, conclusion, consulta_looker, usuario):
+        """Escritura por lotes (<= LOTE filas por commit) para no rozar los
+        limites de mutaciones por transaccion de Spanner. Cada commit es
+        idempotente; si truena a la mitad, el reintento converge."""
         sp = self._sp
         ts = sp.COMMIT_TIMESTAMP
         provs, lics, participo, coludido = _coleccionar(conclusion)
@@ -91,44 +137,33 @@ class SpannerGrafo:
                 values=[(corrida_id, "looker_action", usuario,
                          sp.JsonObject(consulta_looker or {}), ts)],
             )
-            if provs:
-                b.insert_or_update(
-                    table="Proveedor",
-                    columns=("proveedor_id", "actualizado_en"),
-                    values=[(p, ts) for p in provs],
-                )
-            if lics:
-                b.insert_or_update(
-                    table="Licitacion",
-                    columns=("licitacion_id", "actualizado_en"),
-                    values=[(l, ts) for l in lics],
-                )
-            if participo:
-                b.insert_or_update(
-                    table="ParticipoEn",
-                    columns=("proveedor_id", "licitacion_id", "props",
-                             "actualizado_en"),
-                    values=[(p, l, sp.JsonObject(props), ts)
-                            for (p, l), props in sorted(participo.items())],
-                )
-            if coludido:
-                b.insert_or_update(
-                    table="ColudidoCon",
-                    columns=("proveedor_id", "destino_proveedor_id", "corrida_id",
-                             "score", "props"),
-                    values=[(p, q, corrida_id,
-                             _score_arista(props, conclusion.score),
-                             sp.JsonObject(props))
-                            for (p, q), props in sorted(coludido.items())],
-                )
-            if provs:
-                b.insert_or_update(
-                    table="ProveedorDetectado",
-                    columns=("proveedor_id", "corrida_id", "score", "evidencia"),
-                    values=[(p, corrida_id, conclusion.score,
-                             sp.JsonObject({"resumen": conclusion.resumen}))
-                            for p in provs],
-                )
+        tandas = [
+            ("Proveedor", ("proveedor_id", "actualizado_en"),
+             [(p, ts) for p in provs]),
+            ("Licitacion", ("licitacion_id", "actualizado_en"),
+             [(l, ts) for l in lics]),
+            ("ParticipoEn",
+             ("proveedor_id", "licitacion_id", "props", "actualizado_en"),
+             [(p, l, sp.JsonObject(props), ts)
+              for (p, l), props in sorted(participo.items())]),
+            ("ColudidoCon",
+             ("proveedor_id", "destino_proveedor_id", "corrida_id",
+              "score", "props"),
+             [(p, q, corrida_id, _score_arista(props, conclusion.score),
+               sp.JsonObject(props))
+              for (p, q), props in sorted(coludido.items())]),
+            ("ProveedorDetectado",
+             ("proveedor_id", "corrida_id", "score", "evidencia"),
+             [(p, corrida_id, conclusion.score,
+               sp.JsonObject({"resumen": conclusion.resumen}))
+              for p in provs]),
+        ]
+        for tabla, columnas, filas in tandas:
+            for lote in _lotes(filas):
+                if lote:
+                    with self._db.batch() as b:
+                        b.insert_or_update(table=tabla, columns=columnas,
+                                           values=lote)
 
     def encolar_revision(self, corrida_id, conclusion):
         sp = self._sp
@@ -161,7 +196,15 @@ class AlloyDBGrafo:
         self._Json = Json
         self._dsn = os.environ["ALLOYDB_DSN"]
 
+    def verificar(self) -> None:
+        with self._pg.connect(self._dsn) as con, con.cursor() as cur:
+            cur.execute("SELECT 1")
+
     def persistir(self, corrida_id, conclusion, consulta_looker=None, usuario=""):
+        _con_reintentos(lambda: self._persistir(
+            corrida_id, conclusion, consulta_looker, usuario))
+
+    def _persistir(self, corrida_id, conclusion, consulta_looker, usuario):
         J = self._Json
         provs, lics, participo, coludido = _coleccionar(conclusion)
 

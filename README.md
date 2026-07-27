@@ -24,7 +24,42 @@ analista ⇄ data agent (Conversational Analytics, Looker)
              GrafoColusion                mismas tablas, ON CONFLICT
 ```
 
-## Estructura
+## Instalación end to end (runbook)
+
+```bash
+# 0. Prerrequisitos: gcloud autenticado, proyecto con billing,
+#    credenciales API de Looker (client id/secret) y permisos de Owner/Editor.
+gcloud auth login && gcloud auth application-default login
+
+# 1. Infraestructura + action (APIs, base, secreto, Cloud Run)
+export PROYECTO=mi-proyecto REGION=us-central1 BACKEND=spanner
+./instalar/desplegar.sh          # imprime URL y token al final
+
+# 2. Probar SIN Looker (si esto pasa, la tubería completa funciona)
+./instalar/probar.sh             # list → execute → lee ColudidoCon del grafo
+
+# 3. Registro en Looker (manual, una sola vez):
+#    Admin → Platform → Actions → Add Action Hub → URL + token → Test.
+#    Desde aquí ya funcionan Explore→Send, schedules y la action de celda.
+
+# 4. (Para detonar desde el chat) crear el data agent de la CA API:
+export LOOKER_BASE_URL=https://tuempresa.cloud.looker.com \
+       EXPLORES="compras:licitaciones" DATA_AGENT_ID=colusion
+python3 instalar/crear_agente.py # imprime el DATA_AGENT_ID completo
+
+# 5. Correr el chat (local, o a Cloud Run con chat/Dockerfile)
+cd chat && pip install -r requirements.txt
+export GOOGLE_CLOUD_PROJECT=$PROYECTO LOOKER_CLIENT_ID=... LOOKER_CLIENT_SECRET=... \
+       ACTION_URL=<URL del paso 1> ACTION_HUB_TOKEN=<token del paso 1>
+streamlit run app.py             # variante agente-detona: adk web (raiz_adk.py)
+```
+
+Orden de dependencias: la base y la action no necesitan nada de Looker; el
+paso 3 habilita los caminos nativos; los pasos 4–5 solo hacen falta para
+detonar desde el chat. `desplegar.sh` es idempotente: reejecutarlo no
+duplica recursos.
+
+
 
 ```
 app/          servicio Action API (FastAPI) para Cloud Run
@@ -32,6 +67,8 @@ app/          servicio Action API (FastAPI) para Cloud Run
   contratos.py    ConclusionColusion, Implicado, Arista (Pydantic)
   repositorio.py  puerto GrafoRepositorio + adaptadores Spanner y AlloyDB
 sql/
+instalar/     desplegar.sh (infra+deploy), probar.sh (e2e sin Looker), crear_agente.py
+chat/         app.py (boton detona), raiz_adk.py (agente detona), comun.py
   spanner_graph.sql   DDL + CREATE PROPERTY GRAPH + consultas GQL de ejemplo
   alloydb.sql         DDL espejo + consultas SQL recursivas equivalentes
 ```
@@ -197,6 +234,45 @@ Probar local con `adk web`.
 
 Este chat puede embeberse de vuelta en Looker (extension framework / iframe)
 para que los analistas no salgan de Looker.
+
+## A prueba de balas: garantias y politica de fallas
+
+**Idempotencia real.** `corrida_id` es un hash del contenido del payload
+(plan + adjunto + form). Looker reintenta webhooks fallidos y un schedule
+puede disparar dos veces: con corridas deterministas el grafo converge en
+vez de duplicarse. Efecto deliberado: la conclusion identica dos veces
+deduplica a una corrida; cambiar las notas fuerza una nueva. Aplica tambien
+al doble clic de la action de celda.
+
+**Politica de errores (quien reintenta y cuando).** Payload invalido o
+columnas no mapeables → HTTP 200 con `success:false` y explicacion
+(reintentar no ayuda; no hay tormenta de retries). Error de base →
+HTTP 503 para que Looker SI reintente — es seguro por la idempotencia.
+Ademas el repositorio reintenta internamente errores transitorios
+(Aborted, ServiceUnavailable, Deadline, OperationalError...) con backoff
+exponencial, 3 intentos.
+
+**Limites explicitos.** `MAX_BYTES` (20 MB) por peticion y `MAX_FILAS`
+(2000) procesadas con aviso en el mensaje; Spanner escribe en lotes de
+`LOTE_ESCRITURA` (500) filas por commit para no rozar los limites de
+mutaciones por transaccion. Cada commit es idempotente: si truena a la
+mitad, el reintento converge.
+
+**Celdas hostiles.** `{"value": x, "rendered": "..."}`, scores como
+"0.85" o "85%", nulos, columnas extra: todo se normaliza o viaja como
+props; nada tira el endpoint (ver `app/pruebas.py`).
+
+**Operacion.** `GET /` = vivo; `GET /listo` = readiness que verifica la
+base (usalo como uptime check y para el probe de Cloud Run). Logs JSON
+estructurados con `severity`, `evento`, `corrida` — filtrables en Cloud
+Logging; alerta sugerida: `severity>=ERROR AND jsonPayload.evento="persistencia_fallida"`.
+Token comparado en tiempo constante.
+
+**Verificacion continua.** `cd app && python3 -m pytest pruebas.py`
+(15 pruebas de estas garantias, sin GCP) y `./instalar/probar.sh` como
+aceptacion post-deploy: salud, 401, escritura, doble disparo con
+`COUNT(*)==1`, ruta de revision y lectura del grafo. Corre la aceptacion
+despues de cada deploy y antes de cada demo.
 
 ## Nota de costos (el miedo a Spanner)
 
