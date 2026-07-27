@@ -1,0 +1,3 @@
+streamlit==1.*
+google-cloud-geminidataanalytics==0.*
+google-adk==2.*          # solo para raiz_adk.py
