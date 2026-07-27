@@ -198,3 +198,9 @@ def test_listo_ok_y_caido(cli):
 
     main._repo = RepoCaido()
     assert cli.get("/listo").status_code == 503
+
+
+def test_viz_estatico_publico(cli):
+    """El custom viz se sirve sin token (es JS publico, sin secretos)."""
+    r = cli.get("/viz/grafo_fuerza.js")
+    assert r.status_code == 200 and "grafo_fuerza" in r.text

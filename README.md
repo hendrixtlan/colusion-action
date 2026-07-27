@@ -40,20 +40,40 @@ como alternativa de costo. El principio se conserva: *el LLM propone, el codigo
 dispone* — el agente solo arma consultas gobernadas por LookML; toda escritura
 al grafo es codigo determinista e idempotente con proveniencia (nodo `Corrida`).
 
-```
-analista ⇄ data agent (Conversational Analytics, Looker)
-                │  consulta gobernada (Explore)
-                ▼
-        Send / Schedule ──► Action "Escribir conclusión al grafo de colusión"
-                                    │  POST /accion/execute (Cloud Run)
-                                    ▼
-                      filas → nodos/aristas (determinista)
-                                    │
-                     ┌──────────────┴──────────────┐
-                     ▼                             ▼
-             Spanner Graph (GQL)          AlloyDB (SQL + WITH RECURSIVE)
-             GrafoColusion                mismas tablas, ON CONFLICT
-```
+## Arquitectura
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/arquitectura-dark.svg">
+  <img alt="Lamina I - arquitectura: el analista conversa con el data agent de Conversational Analytics dentro de Looker; Send, Schedule o la action de celda disparan la action en Cloud Run, que convierte las filas en nodos y aristas y escribe al grafo (Spanner Graph o AlloyDB segun GRAFO_BACKEND); el modo revision desvia a RevisionPendiente en ambar y el grafo regresa a Looker como Explores" src="docs/img/arquitectura-light.svg" width="100%">
+</picture>
+
+La convencion de las laminas: **neutro** para infraestructura y codigo
+determinista, **indigo** para lo que hace un LLM, **ambar** para la
+intervencion humana. GitHub sirve la variante clara u oscura segun tu tema.
+
+## El camino de la conclusion
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/camino-dark.svg">
+  <img alt="Lamina II - el camino de la conclusion: el data agent (tarjeta indigo con chispa) arma la consulta, las filas pasan por normalizar y se convierten en una ConclusionColusion tipada; un rombo decide el modo: auto escribe con insert_or_update al GrafoColusion, revision encola en RevisionPendiente en ambar. Nota al margen: corrida_id es el sha256 del payload, por lo que el reintento de Looker converge" src="docs/img/camino-light.svg" width="100%">
+</picture>
+
+La tarjeta indigo con la chispa es el unico paso probabilistico; lo demas es
+codigo determinista. El principio: **el LLM propone, el codigo dispone**.
+Ningun LLM tiene credenciales de la base.
+
+## El patron en el grafo
+
+Lo que la action caza — "dos proveedores participan en las mismas licitaciones
+y el ganador alterna" — es literalmente una figura en `GrafoColusion`:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/patron-dark.svg">
+  <img alt="Lamina III - el patron: el proveedor a y el proveedor b participan en la misma licitacion con posturas que alternan el ganador entre t1 y t2; la arista indigo COLUDIDO_CON con score y senales los une, y ambos cuelgan con aristas punteadas DETECTADO_EN de la corrida que los detecto" src="docs/img/patron-light.svg" width="100%">
+</picture>
+
+La consulta GQL que encuentra esa figura esta en `sql/spanner_graph.sql`
+(y su equivalente con `WITH RECURSIVE` en `sql/alloydb.sql`).
 
 ## Instalación end to end (runbook)
 
@@ -98,8 +118,10 @@ app/          servicio Action API (FastAPI) para Cloud Run
   contratos.py    ConclusionColusion, Implicado, Arista (Pydantic)
   repositorio.py  puerto GrafoRepositorio + adaptadores Spanner y AlloyDB
 sql/
+docs/img/     laminas del README (claro/oscuro); se regeneran con
+              `python3 docs/img/generar.py` — no editar los .svg a mano
 instalar/     desplegar.sh (infra+deploy), probar.sh (e2e sin Looker), crear_agente.py
-chat/         app.py (boton detona), raiz_adk.py (agente detona), comun.py
+chat/         app.py (boton detona), agente/agent.py (agente detona), comun.py
   spanner_graph.sql   DDL + CREATE PROPERTY GRAPH + consultas GQL de ejemplo
   alloydb.sql         DDL espejo + consultas SQL recursivas equivalentes
 ```
@@ -255,13 +277,13 @@ Looker (mismas instrucciones), o bien se usa el patron equivalente con los
 endpoints `ConversationalAnalytics` del API de Looker si prefieres que el
 agente siga gestionado en Looker.
 
-**b) `chat/raiz_adk.py` — el agente detona (patron "governed" de ADK).**
+**b) `chat/agente/agent.py` — el agente detona (patron "governed" de ADK).**
 Agente raiz con `DataAgentToolset` (tool `ask_data_agent`) + la tool custom
 `escribir_grafo_colusion`. El usuario puede decir *"y escribe esa conclusion
 al grafo"* y el agente llama la tool. Guardrail: la tool escribe en modo
 `revision` (RevisionPendiente) salvo peticion explicita de escritura
 directa, y la conversion filas→aristas sigue siendo la de la action.
-Probar local con `adk web`.
+Probar local con `cd chat && adk web`.
 
 Este chat puede embeberse de vuelta en Looker (extension framework / iframe)
 para que los analistas no salgan de Looker.
@@ -294,8 +316,39 @@ lugar: el agente encuentra, la action escribe, Looker enseña lo escrito.
 5. **El as de la demo**: Spanner Studio visualiza el grafo nativo (nodos y
    aristas) cuando la consulta devuelve nodos con `SAFE_TO_JSON` — usalo
    para el momento "network graph" mientras Looker muestra chord y tablas.
-   Fase 2 si piden el network dentro de Looker: custom viz (D3 force) o
-   extension framework.
+   Y el network **dentro** de Looker ya viene incluido: ver la siguiente
+   seccion.
+
+### Force-directed dentro de Looker (custom viz incluido)
+
+`app/estaticos/grafo_fuerza.js` es un custom viz (API de visualizaciones de
+Looker) probado contra DOM real: grafo de fuerzas con D3, nodos por grado,
+aristas ponderadas por la medida, zoom, arrastre, tooltips y **drill nativo
+de Looker** al hacer clic en una arista. La misma action lo sirve en
+`https://TU-SERVICIO.run.app/viz/grafo_fuerza.js` (ruta publica, sin
+secretos).
+
+Registro (una vez): **Admin → Platform → Visualizations → Add** con
+ID `grafo_fuerza`, Main = la URL anterior y Dependencies =
+`https://d3js.org/d3.v7.min.js`. Alternativa mas gobernada: parametro
+`visualization:` en el manifest del proyecto LookML (con `file:` para
+empaquetarlo dentro del repo LookML y que Looker lo sirva internamente,
+versionado con los commits).
+
+Uso: en cualquier Explore con 2 dimensiones (origen, destino) + 1 medida —
+p.ej. `pares_por_licitacion (a, b, licitaciones_compartidas)` o el Explore
+`anillo` — elige "Grafo de colusion (fuerzas)". Disciplina de rendimiento:
+el viz corta con mensaje claro arriba de `max_nodos` (default 300); un
+force layout dibuja subgrafos, no el grafo completo — el GQL limita antes
+de que D3 dibuje.
+
+**Fase 2 real (se cotiza): la consola de investigacion** con el extension
+framework (`@looker/extension-sdk-react` + manifest `application:` con
+entitlements `core_api_methods` y `external_api_urls`): expandir anillos al
+clic (inline query sobre el Explore `anillo`), panel de evidencia por
+arista, y aprobar/rechazar `RevisionPendiente` desde la misma pantalla
+(requiere agregar un endpoint `/accion/aprobar` a la action). Estimacion
+honesta: viz adicional 2-4 dias; consola 2-3 semanas + mantenimiento.
 
 ## ¿Y si a media demo piden AlloyDB?
 

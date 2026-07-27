@@ -58,8 +58,9 @@ curl -sf -X POST "$URL/accion/execute" -H "$AUTH" -H "Content-Type: application/
 if [ "$BACKEND" = "spanner" ]; then
   echo "── 6) El grafo dice la verdad ──"
   N=$(gcloud spanner databases execute-sql "$BD_SPANNER" --instance="$INSTANCIA_SPANNER" \
-      --format='value(rows)' \
-      --sql="SELECT COUNT(*) FROM ColudidoCon WHERE corrida_id='${C1}'" | tr -d "[]'")
+      --project "$PROYECTO" --format=json \
+      --sql="SELECT COUNT(*) AS n FROM ColudidoCon WHERE corrida_id='${C1}'" \
+      | python3 -c 'import sys,json; print(json.load(sys.stdin)["rows"][0][0])')
   [ "$N" = "1" ] && ok "exactamente 1 arista para $C1 (sin duplicados)" \
     || fallo "esperaba 1 arista para $C1, hay: $N"
 elif [ -n "${ALLOYDB_DSN:-}" ] && command -v psql >/dev/null; then

@@ -67,7 +67,7 @@ gcloud run deploy "$SERVICIO" --source "${AQUI}/../app" --region "$REGION" \
   --allow-unauthenticated --service-account "$SA_EMAIL" \
   --set-secrets ACTION_HUB_TOKEN=action-hub-token:latest \
   --set-env-vars "GRAFO_BACKEND=${BACKEND},GOOGLE_CLOUD_PROJECT=${PROYECTO},${ENV_BD}" \
-  "${FLAGS_RED[@]}"
+  ${FLAGS_RED[@]+"${FLAGS_RED[@]}"}
 
 FASE="Fase 5: URL y verificación"; echo "── ${FASE} ──"
 URL="$(ligar_url_y_verificar "$SERVICIO")"

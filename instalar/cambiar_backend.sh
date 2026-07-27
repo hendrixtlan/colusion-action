@@ -14,6 +14,7 @@ REGION="${REGION:-us-central1}"
 DESTINO="${1:?uso: cambiar_backend.sh spanner|alloydb [DSN]}"
 AQUI="$(cd "$(dirname "$0")" && pwd)"
 source "${AQUI}/fases.sh"
+FLAGS_RED=()   # se llena solo en alloydb con red privada
 
 case "$DESTINO" in
   spanner)
@@ -23,7 +24,6 @@ case "$DESTINO" in
     DSN="${2:-${ALLOYDB_DSN:-}}"
     [ -n "$DSN" ] || { echo "falta el DSN de AlloyDB (arg 2 o ALLOYDB_DSN)"; exit 1; }
     VARS="GRAFO_BACKEND=alloydb,ALLOYDB_DSN=${DSN}"
-    FLAGS_RED=()
     [ -n "${RED:-}" ] && FLAGS_RED=(--network="$RED" --subnet="${SUBRED:-$RED}" \
                                     --vpc-egress=private-ranges-only)
     ;;
@@ -32,7 +32,7 @@ esac
 
 echo "── Cambiando colusion-action a ${DESTINO} ──"
 gcloud run services update colusion-action --region "$REGION" --project "$PROYECTO" \
-  --update-env-vars "$VARS" "${FLAGS_RED[@]:-}" >/dev/null
+  --update-env-vars "$VARS" ${FLAGS_RED[@]+"${FLAGS_RED[@]}"} >/dev/null
 URL="$(ligar_url_y_verificar colusion-action)"
 echo "✔ ${URL} respondiendo /listo contra ${DESTINO}"
 echo "Cierra el momento: BACKEND=${DESTINO} PROYECTO=${PROYECTO} REGION=${REGION} ${AQUI}/probar.sh"

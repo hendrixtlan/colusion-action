@@ -34,6 +34,7 @@ import re
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from contratos import Arista, ConclusionColusion, Implicado, TipoArista, TipoNodo
 from repositorio import GrafoRepositorio, construir_repositorio
@@ -42,6 +43,12 @@ logging.basicConfig(level=logging.INFO, format="%(message)s")
 log = logging.getLogger("colusion")
 
 app = FastAPI(title="Action: escribir grafo de colusion")
+
+# Archivos estaticos publicos (sin token): el custom viz de Looker.
+# No contiene secretos; Looker lo carga como <script> via https.
+_ESTATICOS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "estaticos")
+if os.path.isdir(_ESTATICOS):
+    app.mount("/viz", StaticFiles(directory=_ESTATICOS), name="viz")
 
 # ── Configuracion ──
 URL_BASE = os.environ.get("URL_BASE", "").rstrip("/")
